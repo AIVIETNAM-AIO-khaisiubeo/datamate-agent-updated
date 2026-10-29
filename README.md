@@ -19,15 +19,6 @@ The central principle is **answer only when the evidence supports the answer**.
 - [Limitations and validation status](#limitations-and-validation-status)
 - [Documentation and research](#documentation-and-research)
 
-## What the agent does
-
-- **Normalizes messy business data:** repairs common spreadsheet headers, removes repeated headers and summary rows, parses mixed dates and numbers, and loads tables into DuckDB.
-- **Builds a semantic layer:** uses each shop's column descriptions and inferred column roles to construct canonical business views and consistency checks.
-- **Understands question constraints:** extracts intent, answer type, periods, filters, thresholds, ranking constraints, and evidence relevant to answerability.
-- **Generates diverse candidates:** runs deterministic templates and, in LLM mode, multiple SQL samples with optional plan-to-SQL, Python/pandas, ReAct exploration, and execution-feedback repair.
-- **Checks before voting:** executes candidates, normalizes their outputs, groups equivalent answers, and checks explicit requirements against candidate programs.
-- **Calibrates the decision:** combines candidate agreement, execution signals, constraint coverage, and question–program alignment into a correctness estimate before answering or abstaining.
-
 ## Input and output contract
 
 A split contains question metadata, a rulebook, an optional calendar, and one folder per business. The loader searches recursively, so business data may be organized into nested folders.
