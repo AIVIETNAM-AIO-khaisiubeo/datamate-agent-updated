@@ -1,6 +1,6 @@
 # DataMate Agent — System Design and Method Rationale
 
-This document describes the implementation in this repository, the research ideas that influenced it, and the limitations of those adaptations. It is scoped to the **round-one DataMate inference pipeline**; it does not describe a deployment-image submission workflow.
+This document describes the implementation in this repository, the research ideas that influenced it, and the limitations of those adaptations. It is scoped to the **round-one DataMate inference pipeline**.
 
 Related documents: [README](../README.md), [Results](RESULTS.md), [Curated references](REFERENCES.md), [Architecture source](figures/architecture_round1.mmd).
 
