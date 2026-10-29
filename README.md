@@ -1,346 +1,304 @@
 # DataMate Agent
 
-**Zalo AI Challenge 2026 — DataMate**  
-*A calibrated Vietnamese natural-language data agent for small-business spreadsheets and databases.*
+**Zalo AI Challenge 2026 · DataMate · Round-one documentation**
 
-DataMate answers everyday Vietnamese questions over business data stored in CSV, Excel, or SQLite. It combines deterministic data preparation and query templates with LLM-generated programs, execution-based verification, answer reconciliation, and a calibrated abstention decision. Its central design principle is **answer only when the available evidence supports the answer**.
+DataMate is a Vietnamese natural-language data agent for small-business spreadsheets and databases. It answers questions over CSV, Excel, and SQLite data by combining deterministic data preparation, auditable query templates, LLM-generated programs, execution-based verification, candidate reconciliation, and calibrated abstention.
 
-> **Objective:** maximise Penalized Accuracy (PA), where a correct answer scores +1, abstention scores 0, and a wrong answer scores −1. A confident-looking but unsupported answer is therefore worse than abstaining.
+The central principle is **answer only when the evidence supports the answer**.
 
-Example input:
-
-```json
-{
-  "id": "q_06de33fa21cc",
-  "business_id": "biz_118",
-  "question": "sp bán dc nhiều nhất tuần rồi là gì",
-  "as_of_date": "2026-03-04"
-}
-```
-
-Example answer:
-
-```json
-{
-  "id": "q_06de33fa21cc",
-  "type": "string",
-  "answer": "Xi măng Hà Tiên PCB40 bao 50kg"
-}
-```
-
----
+> **Scoring objective:** Penalized Accuracy (PA) gives +1 for a correct answer, −1 for an incorrect answer, and 0 for abstention. If the estimated probability that an answer is correct is p, answering has expected score 2p − 1. The basic decision rule is therefore to answer only when p > 0.5.
 
 ## Contents
 
-- [Overview](#overview)
+- [What the agent does](#what-the-agent-does)
+- [Input and output contract](#input-and-output-contract)
 - [Architecture](#architecture)
-- [How a question is answered](#how-a-question-is-answered)
-- [Research foundations](#research-foundations)
-- [Results and evaluation caveats](#results-and-evaluation-caveats)
-- [Getting started](#getting-started)
-- [Run inference](#run-inference)
-- [Docker submission](#docker-submission)
-- [Repository layout](#repository-layout)
-- [Model and runtime constraints](#model-and-runtime-constraints)
-- [Limitations](#limitations)
-- [Documentation](#documentation)
-- [References](#references)
+- [Recorded results](#recorded-results)
+- [First-round workflow](#first-round-workflow)
+- [Repository map](#repository-map)
+- [Limitations and validation status](#limitations-and-validation-status)
+- [Documentation and research](#documentation-and-research)
 
-## Overview
+## What the agent does
 
-### Design goals
+- **Normalizes messy business data:** repairs common spreadsheet headers, removes repeated headers and summary rows, parses mixed dates and numbers, and loads tables into DuckDB.
+- **Builds a semantic layer:** uses each shop's column descriptions and inferred column roles to construct canonical business views and consistency checks.
+- **Understands question constraints:** extracts intent, answer type, periods, filters, thresholds, ranking constraints, and evidence relevant to answerability.
+- **Generates diverse candidates:** runs deterministic templates and, in LLM mode, multiple SQL samples with optional plan-to-SQL, Python/pandas, ReAct exploration, and execution-feedback repair.
+- **Checks before voting:** executes candidates, normalizes their outputs, groups equivalent answers, and checks explicit requirements against candidate programs.
+- **Calibrates the decision:** combines candidate agreement, execution signals, constraint coverage, and question–program alignment into a correctness estimate before answering or abstaining.
 
-- **Evidence-first answering:** answers are based on programs that are executed against the shop's data, not on free-form text generation alone.
-- **Correct business semantics:** a rulebook-aware semantic layer normalises tables and applies business rules consistently before analysis.
-- **Multiple solution paths:** deterministic templates, SQL, plan-then-SQL, pandas, and ReAct-style exploration can independently produce candidate answers.
-- **Execution-based verification:** candidate programs are executed and grouped by their resulting answers; requirements are checked before voting.
-- **Calibrated abstention:** a probability calibrator estimates answer correctness, and the decision rule reflects the competition's +1 / 0 / −1 scoring.
-- **Reproducible and resource-aware inference:** fixed seeds, response caching, structured JSONL output, per-question logs, an offline fallback, and model-budget checks.
+## Input and output contract
 
-### Supported inputs and output
+A split contains question metadata, a rulebook, an optional calendar, and one folder per business. The loader searches recursively, so business data may be organized into nested folders.
 
-The runner consumes a split containing question metadata, a rulebook, an optional lunar calendar, and one or more data files per business. Data files can be CSV, Excel workbooks, or SQLite databases. The expected competition input structure is:
-
-```text
+~~~text
 <split>/
 ├── questions.jsonl
 ├── rulebook.md
-├── calendar.csv
-└── data/
-    └── <business_id>/
-        ├── ... CSV / XLSX / SQLite files ...
-        └── README.md                 # optional column descriptions
-```
+├── calendar.csv                 # optional solar–lunar calendar
+└── <business_id>/
+    ├── sales.xlsx
+    ├── customers.csv
+    ├── inventory.sqlite
+    └── README.md                 # optional column descriptions
+~~~
 
-The runner emits one JSON object per input question in `submission.jsonl`. Detailed execution traces can be written to a separate log directory.
+Each line in questions.jsonl is a JSON object with fields such as id, business_id, question, and as_of_date. Challenge questions are Vietnamese; the English example below illustrates the record schema only.
+
+~~~json
+{
+  "id": "q_example",
+  "business_id": "biz_example",
+  "question": "Which product sold the most last week?",
+  "as_of_date": "2026-03-04"
+}
+~~~
+
+The runner writes one output record per input question to a JSONL submission file. Optional per-question logs record the decision, timing, parsed context, candidate programs, execution results, and confidence features.
 
 ## Architecture
 
+The diagram separates reusable business-data preparation from per-question processing. Both paths meet at candidate generation and bounded execution; reconciliation and confidence estimation then determine whether to return a typed answer or abstain.
 
-At a high level, a question travels through six stages:
+~~~mermaid
+flowchart TB
+  subgraph INPUTS["1 · Inputs"]
+    direction LR
+    Q["Question record<br/>question · business_id · as_of_date"]
+    FILES["Business files<br/>CSV · Excel · SQLite"]
+    SHOP["Shop README<br/>column notes and conventions"]
+    RB["Split rulebook<br/>authoritative business semantics"]
+    CAL["Optional calendar<br/>solar–lunar dates"]
+  end
 
-| Stage | Main components | Responsibility |
-|---|---|---|
-| 1. Ingest | `loader.py`, `readme.py`, `roles.py` | Load heterogeneous files into DuckDB, interpret column documentation, infer column roles, and normalise values. |
-| 2. Semantic layer | `salesview.py`, `rulebook.py`, `attributes.py` | Build standard views such as `v_sales`, `v_orders`, `v_products`, and `v_purchases`; apply rulebook semantics and run consistency checks. |
-| 3. Understand the question | `textnorm.py`, `question.py`, `timeresolver.py`, `linker.py`, `answerability.py`, `requirements.py` | Normalise Vietnamese text, extract intent and constraints, resolve time ranges, link mentioned entities to data, identify unanswerable questions, and build explicit requirements. |
-| 4. Generate candidates | `templates.py`, `prompts.py`, `agent.py` | Produce deterministic candidates first, then generate SQL and escalate to alternative reasoning/programming paths when needed. |
-| 5. Execute and reconcile | `executor.py`, `formatter.py`, `requirements.py` | Execute candidates, standardise outputs, group equivalent answers, check requirement coverage, and vote among supported candidates. |
-| 6. Estimate reliability | `inversion.py`, `calibrate.py`, `scorer.py` | Inspect whether the winning program appears to answer the original question, calibrate correctness probability, and answer or abstain. |
+  subgraph CONTEXT["2 · Parallel context construction"]
+    direction LR
+    subgraph DATA["Data preparation and semantic layer"]
+      direction TB
+      LOAD["Load and normalize<br/>repair headers · parse types · clean rows"]
+      ROLES["Interpret schema<br/>README evidence · column roles"]
+      VIEWS["DuckDB semantic layer<br/>raw tables + canonical business views"]
+      CHECKS["Consistency checks<br/>totals · quantities · lineage · warnings"]
+      LOAD --> ROLES --> VIEWS --> CHECKS
+    end
+    subgraph QUESTION["Question understanding"]
+      direction TB
+      NORM["Vietnamese text normalization"]
+      PARSE["Intent and constraint analysis<br/>answer type · filters · thresholds · top-k"]
+      TIME["Resolve time expressions<br/>explicit date intervals"]
+      LINK["Link entities and attributes<br/>observed values · ambiguity checks"]
+      AVAIL["Collect answerability evidence"]
+      REQ["Explicit requirements R1…Rn<br/>time · valid orders · filters · rank · type"]
+      NORM --> PARSE
+      PARSE --> TIME
+      PARSE --> LINK
+      PARSE --> AVAIL
+      TIME --> REQ
+      LINK --> REQ
+      AVAIL --> REQ
+      PARSE --> REQ
+    end
+  end
 
+  subgraph CANDIDATES["3 · Candidate generation"]
+    direction LR
+    TPL["Deterministic templates<br/>fast and auditable"]
+    SQL["LLM SQL samples<br/>requirements-aware prompts"]
+    ESC["Adaptive escalation<br/>plan-to-SQL · Python/pandas · ReAct · repair"]
+    SQL --> RUN
+    FMT -. if first-round agreement is insufficient .-> ESC
+  end
 
-## Research foundations
+  subgraph EXECUTION["4 · Execution and reconciliation"]
+    direction LR
+    RUN["Bounded execution<br/>read-only SQL · isolated Python"]
+    FMT["Normalize and type results<br/>capture execution errors"]
+    GROUP["Group by executed answer<br/>equivalent results share a cluster"]
+    RC["Requirement reconciliation<br/>program checks + optional LLM verdict"]
+    VOTE["Candidate selection<br/>weighted vote · judge on close ties"]
+    RUN --> FMT --> GROUP --> RC --> VOTE
+  end
 
-DataMate adapts ideas from prior work rather than reproducing any paper's complete system. The most relevant connections are:
+  subgraph RELIABILITY["5 · Reliability and decision"]
+    direction LR
+    ALIGN["Question–program alignment<br/>Trace Inversion for LLM answers<br/>plan grounding for template answers"]
+    CALIB["Correctness calibrator<br/>P(answer is correct | evidence)"]
+    DECIDE{"PA decision<br/>P(correct) > 0.5?"}
+    ANSWER["Answer / unanswerable<br/>typed output record"]
+    ABSTAIN["Abstain"]
+    OUT["Round-one artifacts<br/>submission JSONL + question logs"]
+    ALIGN --> CALIB
+    CALIB --> DECIDE
+    DECIDE -->|yes| ANSWER
+    DECIDE -->|no| ABSTAIN
+    ANSWER --> OUT
+    ABSTAIN --> OUT
+  end
 
-| Method in DataMate | Research connection | How it is used |
-|---|---|---|
-| Schema and entity linking | RESDSQL [R6], CHESS [R7], CHASE-SQL [R8], AmbiQT [R25] | Interpret column roles and map Vietnamese mentions to values in the shop's actual data. |
-| Decomposition and candidate diversity | DIN-SQL [R3], CHASE-SQL [R8], XiYan-SQL [R5], Self-Consistency [R11] | Use structured query understanding and multiple independently generated candidates. |
-| Tool use and executable programs | ReAct [R12], CodeAct [R13], execution-guided decoding [R16], Self-Debugging [R17] | Use execution outcomes and errors to validate or repair candidate programs. |
-| Candidate reconciliation | ReViSQL [R40], Self-Consistency [R11] | Check explicit requirements on candidate programs, then vote on answers derived from execution. This is an inference-time adaptation, not the ReViSQL training method. |
-| Abstention and reliability | Chow [R27], selective classification [R28], TrustSQL [R19], EHRSQL [R18], conformal abstention [R26] | Treat abstention as a first-class action and account for unanswerable or ambiguous questions. |
-| Probability calibration | Guo et al. [R29], Platt [R30], Zadrozny and Elkan [R31] | Calibrate correctness features with logistic/Platt-style and isotonic methods. |
-| Trace Inversion | Gourabathina et al. [R39] | Adapt query reconstruction to the winning executable program and its result, with a structural consistency signal suited to this task. |
-| Fast model serving and analytics | vLLM/PagedAttention [R32], DuckDB [R34], Qwen3 [R35] | Serve the chosen open-weight model and execute analytical queries locally. |
+  FILES --> LOAD
+  SHOP --> ROLES
+  Q --> NORM
+  RB -.-> VIEWS
+  RB -.-> REQ
+  CAL -.-> TIME
+  VIEWS -. observed values .-> LINK
+  VIEWS --> TPL
+  REQ --> TPL
+  REQ --> SQL
+  TPL --> GROUP
+  ESC --> RUN
+  VIEWS -. raw and canonical tables .-> RUN
+  REQ -. constraint checks .-> RC
+  CHECKS -. quality features .-> CALIB
+  VOTE --> ALIGN
+  VOTE -. agreement and margin .-> CALIB
 
-For full design decisions, what was adapted, and why alternatives were not used, see [`docs/DESIGN.md`](docs/DESIGN.md). The full paper bibliography is included below and maintained separately in [`docs/REFERENCES.md`](docs/REFERENCES.md).
+  FAST["Template-only mode skips LLM generation and LLM-based Trace Inversion.<br/>Template-plan grounding features can still be used."]
+  TPL -. fallback path .-> FAST
 
-## Results and evaluation caveats
+  classDef input fill:#F8FAFC,stroke:#94A3B8,color:#172033;
+  classDef data fill:#DBEAFE,stroke:#60A5FA,color:#172033;
+  classDef question fill:#DCFCE7,stroke:#4ADE80,color:#172033;
+  classDef candidate fill:#EDE9FE,stroke:#A78BFA,color:#172033;
+  classDef execution fill:#FEF3C7,stroke:#FBBF24,color:#172033;
+  classDef reliability fill:#FFE4E6,stroke:#FB7185,color:#172033;
+  classDef output fill:#E2E8F0,stroke:#64748B,color:#172033;
+  class Q,FILES,SHOP,RB,CAL input;
+  class LOAD,ROLES,VIEWS,CHECKS data;
+  class NORM,PARSE,TIME,LINK,AVAIL,REQ question;
+  class TPL,SQL,ESC candidate;
+  class RUN,FMT,GROUP,RC,VOTE execution;
+  class ALIGN,CALIB,DECIDE reliability;
+  class ANSWER,ABSTAIN,OUT,FAST output;
+~~~
 
-The figures below describe the **template + rules configuration without an LLM**, which is the CPU-compatible fallback. They must not be interpreted as the measured performance of the full Qwen3-14B pipeline.
+Editable source: [docs/figures/architecture_round1.mmd](docs/figures/architecture_round1.mmd).
 
-### Training split
+## Recorded results
+
+The figures below are from **template-and-rules mode without an LLM**. They are not measurements of the full Qwen3-14B pipeline.
 
 | Split / configuration | Correct | Wrong | Abstain | Penalized Accuracy |
 |---|---:|---:|---:|---:|
-| Train: 3,000 questions, 30 shops; official scorer, in-sample | 2,667 | 3 | 330 | **0.888** |
+| Train: 3,000 questions, 30 businesses; in-sample | 2,667 | 3 | 330 | **0.888** |
+| Public: 1,000 questions, 14 businesses; no gold labels | — | — | 365 | Not available |
 
-The training result is **in-sample**: failure cases were inspected during development and used to improve general-purpose data handling, linking, and query parsing. It is not an unbiased estimate of held-out performance. The calibrator is designed to use cross-validation grouped by shop, but the overall implementation has still been iteratively developed on the training set.
+The public run returned 611 ordinary answers and 24 evidence-based unanswerable outputs, for 635 non-abstaining outputs. Because public gold labels are unavailable in this repository, **public-test PA cannot be calculated**. The train score is in-sample: errors were inspected during development, so it is not an unbiased estimate of generalization.
 
-### Public test split
+The tracked round-one output is [submissions/public_test_round1.jsonl](submissions/public_test_round1.jsonl). Detailed counts and error analysis are documented in [docs/RESULTS.md](docs/RESULTS.md).
 
-| Outcome | Questions |
-|---|---:|
-| Ordinary answers | 611 |
-| Returned as `unanswerable` | 24 |
-| Abstained | 365 |
-| **Total** | **1,000** |
+## First-round workflow
 
-The public test questions have no available gold labels in this repository, so a public-test PA score **cannot be reported**. This run produced 635 answers, counting `unanswerable` as an answer, and abstained on 365 questions. It ran in approximately 6 minutes 40 seconds on the development CPU environment for the documented run.
+### 1. Install and test
 
-The tracked round-one output is [`submissions/public_test_round1.jsonl`](submissions/public_test_round1.jsonl). Full tables, known error categories, and reproduction commands are in [`docs/RESULTS.md`](docs/RESULTS.md).
+Use Python 3.10 or newer in a clean virtual environment.
 
-## Getting started
-
-### Requirements
-
-- Python **3.10 or newer**.
-- A local environment capable of installing the packages in `requirements.txt`.
-- GPU(s) and a compatible CUDA/vLLM environment only for the full LLM configuration. Unit tests and the template-only path do not require a GPU.
-
-### Install and test
-
-```bash
+~~~bash
 python -m pip install -r requirements.txt
 make test
-```
+~~~
 
-The test command runs the unit and pipeline tests under `tests/`. The repository also includes synthetic-data utilities for local development.
+### 2. Choose the inference path
 
-## Run inference
+**Template-only fallback (CPU-friendly; no LLM call):**
 
-The following commands assume the competition split has the structure shown above. Replace placeholder paths with the actual local split paths.
+~~~bash
+python scripts/run.py --data path/to/public_test --out submissions/public_test_round1.jsonl --logs runs/public_logs --set llm.backend=none --set decision.calibrator_path=artifacts/calibrator_offline.pkl
+~~~
 
-### Option A — CPU-friendly template-only mode
+**Full LLM path using Qwen3-14B:**
 
-This mode does not call an LLM. It is useful for local smoke tests and as a fast fallback.
+Start an OpenAI-compatible vLLM endpoint, for example:
 
-```bash
-python scripts/run.py --data path/to/public_test --out submission.jsonl --logs runs/public_logs --set llm.backend=none --set decision.calibrator_path=artifacts/calibrator_offline.pkl
-```
-
-### Option B — full LLM mode with Qwen3-14B
-
-Serve Qwen3-14B through an OpenAI-compatible vLLM endpoint using two GPUs:
-
-```bash
+~~~bash
 vllm serve Qwen/Qwen3-14B --tensor-parallel-size 2 --enable-prefix-caching --max-model-len 32768 --seed 0
-```
+~~~
 
-In a second terminal, first run the agent on the labelled training split and dump candidate features, then fit the calibrator on that run:
+Fit the calibrator using labeled candidate traces generated with the same LLM configuration, then run the public split:
 
-```bash
-python scripts/run.py --data path/to/train --out runs/train_sub.jsonl --dump runs/train_dump.jsonl
+~~~bash
+python scripts/run.py --data path/to/train --out runs/train_submission.jsonl --dump runs/train_dump.jsonl
 python scripts/fit_calibrator.py runs/train_dump.jsonl path/to/train/answers.jsonl --out artifacts/calibrator.pkl
-```
+python scripts/run.py --data path/to/public_test --out submissions/public_test_round1.jsonl --logs runs/public_logs
+~~~
 
-Then run the public split:
+Do not reuse the template-only calibrator as though it were calibrated for LLM-generated candidates. Confirm paths, the model endpoint, model-budget settings, and the current competition instructions before running the final command.
 
-```bash
-python scripts/run.py --data path/to/public_test --out submission.jsonl --logs runs/public_logs
-```
+### 3. Evaluate a labeled split
 
-**Important:** when enabling LLM inference, fit the calibrator using a labelled run generated by the same LLM configuration. Do not assume that a calibrator fitted on template-only candidates remains calibrated for the LLM candidate distribution.
-
-### Evaluate a labelled split
-
-```bash
+~~~bash
 python scripts/eval_templates.py --split path/to/train --out runs/train_offline_dump.jsonl
 python scripts/evaluate.py submission_train.jsonl path/to/train/answers.jsonl
-```
+~~~
 
-See `python scripts/run.py --help` and the configuration in [`configs/default.yaml`](configs/default.yaml) for additional options.
+Use configs/default.yaml and the command-line help from scripts/run.py for supported options.
 
-## Docker submission
+## Repository map
 
-The repository includes a competition entry point and a Dockerfile template. The entry point reads `/data`, writes `/result/submission.jsonl`, and saves per-question logs under `/result/logs/`.
-
-Before building the image, prepare the local model directory expected by the Dockerfile (by default, `models/Qwen3-14B`). The weights need to be included in the image because inference is configured to run offline. Use the base image/CUDA version required by the competition organisers; the checked-in Dockerfile uses a vLLM OpenAI image as a starting point, and its compatibility with the final organiser environment must be verified.
-
-For a template-only run without starting vLLM, set `NO_LLM=1`. See [`Dockerfile`](Dockerfile) and [`predict.sh`](predict.sh) before building the final submission image.
-
-## Repository layout
-
-```text
-.
-├── datamate/              # Agent implementation
-│   ├── agent.py           # End-to-end orchestration
-│   ├── loader.py          # CSV / Excel / SQLite ingestion and DuckDB loading
-│   ├── readme.py          # Column dictionary and business-data conventions
-│   ├── roles.py           # Column roles and table classification
-│   ├── salesview.py       # Canonical sales/order/product/purchase views
-│   ├── rulebook.py        # Split-specific business rules and rule fingerprints
-│   ├── textnorm.py        # Vietnamese text normalisation
-│   ├── question.py        # Intent, answer type, filters, thresholds and top-k
-│   ├── timeresolver.py    # Relative expressions to explicit date intervals
-│   ├── linker.py          # Question-to-data entity linking
-│   ├── answerability.py   # Evidence for unanswerable questions
-│   ├── requirements.py    # Requirements and candidate-program checks
-│   ├── templates.py       # Deterministic query templates
-│   ├── prompts.py         # SQL / plan / pandas / ReAct / repair prompts
-│   ├── executor.py        # Read-only SQL and isolated Python execution
-│   ├── formatter.py       # Output normalisation and candidate grouping
-│   ├── inversion.py       # Trace and template inversion features
-│   ├── calibrate.py       # Correctness calibration and decision threshold
-│   └── scorer.py          # Official scoring logic
+~~~text
+datamate-agent/
+├── README.md
+├── data/
+│   └── README.md                  # Expected split and business-data layout
+├── datamate/
+│   ├── agent.py                   # Candidate orchestration and selection
+│   ├── answerability.py           # Evidence for unanswerable questions
+│   ├── attributes.py              # Catalog-attribute extraction
+│   ├── calibrate.py               # Correctness probability calibration
+│   ├── executor.py                # Bounded SQL and Python execution
+│   ├── formatter.py               # Typed answer normalization
+│   ├── inversion.py               # Question–program alignment features
+│   ├── linker.py                  # Entity and value linking
+│   ├── loader.py                  # CSV / Excel / SQLite ingestion
+│   ├── lunar.py                   # Lunar-calendar fallback
+│   ├── prompts.py                 # LLM task prompts
+│   ├── question.py                # Intent and constraint analysis
+│   ├── readme.py                  # Shop README parsing
+│   ├── requirements.py            # Explicit constraints and program checks
+│   ├── roles.py                   # Table and column role inference
+│   ├── rulebook.py                # Split-specific rule handling
+│   ├── salesview.py               # Canonical business views
+│   ├── scorer.py                  # Official scoring helpers
+│   ├── synthetic.py               # Synthetic development fixtures
+│   ├── templates.py               # Deterministic answer templates
+│   ├── textnorm.py                # Vietnamese text normalization
+│   └── timeresolver.py             # Date and time resolution
 ├── configs/
-│   ├── default.yaml       # Main runtime configuration
+│   ├── default.yaml
 │   └── rulebook_overrides.yaml
-├── scripts/               # Runner, evaluation, calibration, data export and utilities
-├── tests/                 # Unit and pipeline tests
-├── docs/
-│   ├── DESIGN.md          # Detailed architecture and method-by-method rationale
-│   ├── REFERENCES.md      # Standalone reference list
-│   ├── RESULTS.md         # Evaluation details and known limitations
-│   └── figures/           # Pipeline source and rendered diagram
-├── submissions/           # Tracked round-one submission
-├── predict.sh             # Docker/competition entry point
-├── Dockerfile
-├── requirements.txt
-├── pyproject.toml
-└── Makefile
-```
+├── scripts/
+│   ├── eval_templates.py
+│   ├── evaluate.py
+│   ├── export_rlvr_data.py        # Optional research utility; not needed for inference
+│   ├── fit_calibrator.py
+│   ├── inspect_business.py
+│   ├── make_synthetic.py
+│   └── run.py
+├── tests/
+├── submissions/
+│   └── public_test_round1.jsonl
+└── docs/
+    ├── DESIGN.md
+    ├── REFERENCES.md
+    ├── RESULTS.md
+    └── figures/
+        └── architecture_round1.mmd
+~~~
 
-## Model and runtime constraints
+## Limitations and validation status
 
-| Component | Role | Notes |
-|---|---|---|
-| `Qwen/Qwen3-14B` | Main LLM for SQL/program generation, ReAct, candidate judgement, verdict reconciliation, and query reconstruction | Declared as 14.8B parameters; Apache-2.0 model licence per project configuration. |
-| `intfloat/multilingual-e5-small` | Optional embedding-based signal for Trace Inversion | Disabled by default; the default character 3-gram signal does not require another model. If enabled, its parameters must be included in the total model budget. |
-| vLLM | Local OpenAI-compatible inference server | Two-GPU tensor parallelism is used in the documented full configuration. |
-| DuckDB | Analytical execution engine | Queries use the local semantic layer; SQL execution is read-only and has a timeout. |
+- The recorded PA of 0.888 is an in-sample training result from template-and-rules mode.
+- The public split has no gold labels in this repository, so its accuracy and PA cannot be reported here.
+- The full Qwen3-14B GPU run and its model-specific calibration have not been validated in the documented development environment. A mock backend and a small CPU model were used only for smoke tests.
+- Template coverage is incomplete by design; unsupported or ambiguous questions may be abstained on.
+- ReViSQL-inspired requirement checks/reconciliation and Trace Inversion are inference-time adaptations. This repository does not reproduce ReViSQL's expert-labeling or RLVR fine-tuning pipeline.
 
-The competition configuration declares a total inference-time model budget of at most 15B parameters. The optional encoder is therefore disabled by default when Qwen3-14B uses the main budget. The runtime configuration also includes a time budget and a template-only fast fallback. Check the current competition rules and hardware environment before making a submission.
+## Documentation and research
 
-## Limitations
+- [Detailed design](docs/DESIGN.md) — architecture, implementation rationale, paper adaptations, and limitations.
+- [Results and reproduction notes](docs/RESULTS.md) — measured outcomes, error categories, and commands.
+- [Curated references](docs/REFERENCES.md) — the smaller set of papers and technical references that directly support the methods used here.
+- [Default configuration](configs/default.yaml) — inference model, candidate generation, reconciliation, inversion, calibration, and time budget.
 
-- **Full-model performance is not yet measured in the documented development environment.** The reported scores are from template + rules on CPU. The LLM execution path has been smoke-tested with a mock LLM and a small local model, but the full Qwen3-14B GPU run and its final calibration must be evaluated separately.
-- **Training performance is in-sample.** It should not be presented as an unbiased generalisation score.
-- **Public-test ground truth is unavailable here.** Public answer coverage is reported, but public PA and accuracy cannot be calculated.
-- **Template coverage is intentionally incomplete.** In template-only mode, questions outside the implemented sales and purchasing intents may be abstained on. The LLM path is intended to handle additional business-specific questions.
-- **Deployment depends on the organiser's runtime.** The Dockerfile is a starting point, not a guarantee of compatibility with a particular GPU/CUDA base image.
-
-## Documentation
-
-- [**Design and method rationale**](docs/DESIGN.md) — architecture, design decisions, the connection to each cited method, adaptations, ablations, and limitations.
-- [**Detailed evaluation**](docs/RESULTS.md) — split counts, measured results, known errors, and reproduction commands.
-- [**Reference list**](docs/REFERENCES.md) — citation keys used in code comments and design documentation.
-- [**Pipeline source**](docs/figures/pipeline_v2.mmd) — Mermaid source for the architecture figure.
-- [**Configuration**](configs/default.yaml) — model serving, candidate generation, reconciliation, inversion, calibration, and time budget.
-
----
-
-## References
-
-The citation keys below are used in the design documentation and are included here so readers can trace the technical foundations directly from the README. Titles link to arXiv or publisher pages when a stable public link is available. These are bibliographic references, not copied passages from the papers.
-
-### Text-to-SQL and schema linking
-
-- **[R1] BIRD.** J. Li et al. “Can LLM Already Serve as A Database Interface? A BIg Bench for Large-Scale Database-Grounded Text-to-SQLs.” NeurIPS 2023 (Datasets and Benchmarks). [arXiv:2305.03111](https://arxiv.org/abs/2305.03111).
-- **[R2] Spider 2.0.** F. Lei et al. “Spider 2.0: Evaluating Language Models on Real-World Enterprise Text-to-SQL Workflows.” ICLR 2025. [arXiv:2411.07763](https://arxiv.org/abs/2411.07763).
-- **[R3] DIN-SQL.** M. Pourreza and D. Rafiei. “DIN-SQL: Decomposed In-Context Learning of Text-to-SQL with Self-Correction.” NeurIPS 2023. [arXiv:2304.11015](https://arxiv.org/abs/2304.11015).
-- **[R4] Alpha-SQL.** B. Li, J. Zhang, J. Fan, Y. Xu, C. Chen, N. Tang, and Y. Luo. “Alpha-SQL: Zero-Shot Text-to-SQL using Monte Carlo Tree Search.” ICML 2025. [arXiv:2502.17248](https://arxiv.org/abs/2502.17248).
-- **[R5] XiYan-SQL.** Y. Gao et al. “XiYan-SQL: A Multi-Generator Ensemble Framework for Text-to-SQL.” [arXiv:2411.08599](https://arxiv.org/abs/2411.08599).
-- **[R6] RESDSQL.** H. Li, J. Zhang, C. Li, and H. Chen. “RESDSQL: Decoupling Schema Linking and Skeleton Parsing for Text-to-SQL.” AAAI 2023. [arXiv:2302.05965](https://arxiv.org/abs/2302.05965).
-- **[R7] CHESS.** S. Talaei, M. Pourreza, Y.-C. Chang, A. Mirhoseini, and A. Saberi. “CHESS: Contextual Harnessing for Efficient SQL Synthesis.” [arXiv:2405.16755](https://arxiv.org/abs/2405.16755).
-- **[R8] CHASE-SQL.** M. Pourreza et al. “CHASE-SQL: Multi-Path Reasoning and Preference Optimized Candidate Selection in Text-to-SQL.” ICLR 2025. [arXiv:2410.01943](https://arxiv.org/abs/2410.01943).
-- **[R9] OmniSQL.** H. Li et al. “OmniSQL: Synthesizing High-quality Text-to-SQL Data at Scale.” PVLDB 18(11), 2025. [arXiv:2503.02240](https://arxiv.org/abs/2503.02240).
-- **[R10] Arctic-Text2SQL-R1.** Z. Yao, G. Sun, Ł. Borchmann, Z. Shen, M. Deng, B. Zhai, H. Zhang, A. Li, and Y. He. “Arctic-Text2SQL-R1: Simple Rewards, Strong Reasoning in Text-to-SQL.” Findings of ACL 2026. [arXiv:2505.20315](https://arxiv.org/abs/2505.20315).
-- DAIL-SQL. D. Gao et al. “Text-to-SQL Empowered by Large Language Models: A Benchmark Evaluation.” PVLDB 17(5), 2024. [arXiv:2308.15363](https://arxiv.org/abs/2308.15363).
-- MAC-SQL. B. Wang et al. “MAC-SQL: A Multi-Agent Collaborative Framework for Text-to-SQL.” COLING 2025. [arXiv:2312.11242](https://arxiv.org/abs/2312.11242).
-
-### Reasoning, agents, and table question answering
-
-- **[R11] Self-Consistency.** X. Wang et al. “Self-Consistency Improves Chain of Thought Reasoning in Language Models.” ICLR 2023. [arXiv:2203.11171](https://arxiv.org/abs/2203.11171).
-- **[R12] ReAct.** S. Yao et al. “ReAct: Synergizing Reasoning and Acting in Language Models.” ICLR 2023. [arXiv:2210.03629](https://arxiv.org/abs/2210.03629).
-- **[R13] CodeAct.** X. Wang et al. “Executable Code Actions Elicit Better LLM Agents.” ICML 2024. [arXiv:2402.01030](https://arxiv.org/abs/2402.01030).
-- **[R14] Chain-of-Table.** Z. Wang et al. “Chain-of-Table: Evolving Tables in the Reasoning Chain for Table Understanding.” ICLR 2024. [arXiv:2401.04398](https://arxiv.org/abs/2401.04398).
-- **[R15] InfiAgent-DABench.** X. Hu et al. “InfiAgent-DABench: Evaluating Agents on Data Analysis Tasks.” ICML 2024. [arXiv:2401.05507](https://arxiv.org/abs/2401.05507).
-- **[R16] Execution-guided decoding.** C. Wang et al. “Robust Text-to-SQL Generation with Execution-Guided Decoding.” [arXiv:1807.03100](https://arxiv.org/abs/1807.03100).
-- **[R17] Self-Debugging.** X. Chen, M. Lin, N. Schärli, and D. Zhou. “Teaching Large Language Models to Self-Debug.” ICLR 2024. [arXiv:2304.05128](https://arxiv.org/abs/2304.05128).
-
-### Reliability, ambiguity, and abstention
-
-- **[R18] EHRSQL 2024 shared task.** G. Lee, S. Kweon, S. Bae, and E. Choi. “Overview of the EHRSQL 2024 Shared Task on Reliable Text-to-SQL Modeling on Electronic Health Records.” ClinicalNLP 2024. [arXiv:2405.06673](https://arxiv.org/abs/2405.06673).
-- **[R19] TrustSQL.** G. Lee, W. Chay, S. Cho, and E. Choi. “TrustSQL: A Reliability Benchmark for Text-to-SQL Models with Diverse Unanswerable Questions.” [arXiv:2403.15879](https://arxiv.org/abs/2403.15879).
-- **[R20] PLUQ (1st place EHRSQL 2024).** Y. Jo, S. Lee, M. Seo, S. J. Hwang, and M. Lee. “LG AI Research & KAIST at EHRSQL 2024: Self-Training Large Language Models with Pseudo-Labeled Unanswerable Questions for a Reliable Text-to-SQL System on EHRs.” ClinicalNLP 2024. [arXiv:2405.11162](https://arxiv.org/abs/2405.11162).
-- **[R21] ProbGate (3rd place EHRSQL 2024).** S. Kim, D. Han, and S. Kim. “ProbGate at EHRSQL 2024: Enhancing SQL Query Generation Accuracy through Probabilistic Threshold Filtering and Error Handling.” [arXiv:2404.16659](https://arxiv.org/abs/2404.16659).
-- **[R22] PRACTIQ.** M. Dong, N. Ashok Kumar et al. “PRACTIQ: A Practical Conversational Text-to-SQL Dataset with Ambiguous and Unanswerable Queries.” NAACL 2025. [arXiv:2410.11076](https://arxiv.org/abs/2410.11076).
-- **[R23] Semantic entropy.** S. Farquhar, J. Kossen, L. Kuhn, and Y. Gal. “Detecting hallucinations in large language models using semantic entropy.” *Nature* 630, 625–630 (2024).
-- **[R24] Semantic uncertainty.** L. Kuhn, Y. Gal, and S. Farquhar. “Semantic Uncertainty: Linguistic Invariances for Uncertainty Estimation in Natural Language Generation.” ICLR 2023. [arXiv:2302.09664](https://arxiv.org/abs/2302.09664).
-- **[R25] AmbiQT.** A. Bhaskar et al. “Benchmarking and Improving Text-to-SQL Generation under Ambiguity.” EMNLP 2023. [arXiv:2310.13659](https://arxiv.org/abs/2310.13659).
-- **[R26] Conformal abstention.** Y. Abbasi-Yadkori, I. Kuzborskij et al. “Mitigating LLM Hallucinations via Conformal Abstention.” [arXiv:2405.01563](https://arxiv.org/abs/2405.01563).
-- Abstention survey. B. Wen, J. Yao, S. Feng, C. Xu, Y. Tsvetkov, B. Howe, and L. L. Wang. “Know Your Limits: A Survey of Abstention in Large Language Models.” TACL 2025. [arXiv:2407.18418](https://arxiv.org/abs/2407.18418).
-- P(True). S. Kadavath et al. “Language Models (Mostly) Know What They Know.” [arXiv:2207.05221](https://arxiv.org/abs/2207.05221).
-
-### Decision theory and calibration
-
-- **[R27] Chow's reject rule.** C. K. Chow. “On optimum recognition error and reject tradeoff.” *IEEE Transactions on Information Theory*, 16(1):41–46, 1970.
-- **[R28] Selective classification.** Y. Geifman and R. El-Yaniv. “Selective Classification for Deep Neural Networks.” NeurIPS 2017. [arXiv:1705.08500](https://arxiv.org/abs/1705.08500).
-- **[R29] Neural-network calibration.** C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger. “On Calibration of Modern Neural Networks.” ICML 2017. [arXiv:1706.04599](https://arxiv.org/abs/1706.04599).
-- **[R30] Platt scaling.** J. Platt. “Probabilistic Outputs for Support Vector Machines and Comparisons to Regularized Likelihood Methods.” 1999.
-- **[R31] Multiclass probability calibration.** B. Zadrozny and C. Elkan. “Transforming Classifier Scores into Accurate Multiclass Probability Estimates.” KDD 2002.
-
-### Systems and foundation models
-
-- **[R32] vLLM / PagedAttention.** W. Kwon et al. “Efficient Memory Management for Large Language Model Serving with PagedAttention.” SOSP 2023. [arXiv:2309.06180](https://arxiv.org/abs/2309.06180).
-- **[R33] SGLang.** L. Zheng et al. “SGLang: Efficient Execution of Structured Language Model Programs.” NeurIPS 2024. [arXiv:2312.07104](https://arxiv.org/abs/2312.07104).
-- **[R34] DuckDB.** M. Raasveldt and H. Mühleisen. “DuckDB: an Embeddable Analytical Database.” SIGMOD 2019 (demo).
-- **[R35] Qwen3.** Qwen Team. “Qwen3 Technical Report.” [arXiv:2505.09388](https://arxiv.org/abs/2505.09388). Related coding model reference: B. Hui et al., “Qwen2.5-Coder Technical Report,” [arXiv:2409.12186](https://arxiv.org/abs/2409.12186).
-
-### Vietnamese language and calendar handling
-
-- **[R36] ViText2SQL.** A. T. Nguyen, M. H. Dao, and D. Q. Nguyen. “A Pilot Study of Text-to-SQL Semantic Parsing for Vietnamese.” Findings of EMNLP 2020.
-- **[R37] Vietnamese lunar calendar.** Hồ Ngọc Đức. “Thuật toán tính âm lịch” (*Âm lịch Việt Nam*), 2004. Used as a reference for the fallback lunar-calendar implementation.
-- **[R38] Astronomical algorithms.** J. Meeus. *Astronomical Algorithms*, 2nd edition. Willmann-Bell, 1998.
-
-### Additional methods in the round-one revision
-
-- **[R39] Trace Inversion.** A. Gourabathina, I. Padhi, M. Nagireddy, S. Chaudhury, and P. Sattigeri. “Answering the Wrong Question: Reasoning Trace Inversion for Abstention in LLMs.” *Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (ACL 2026), Long Papers*, pp. 13307–13324. [ACL Anthology](https://aclanthology.org/2026.acl-long.608/) · [arXiv:2604.02230](https://arxiv.org/abs/2604.02230).
-- **[R40] ReViSQL.** Y. Zhu, T. Jin, Y. Choi, and D. Kang. “ReViSQL: Achieving Human-Level Text-to-SQL.” [arXiv:2603.20004](https://arxiv.org/abs/2603.20004). [Project code and BIRD-Verified data](https://github.com/uiuc-kang-lab/ReViSQL).
-- **[R41] CISPO / MiniMax-M1.** MiniMax. “MiniMax-M1: Scaling Test-Time Compute Efficiently with Lightning Attention.” [arXiv:2506.13585](https://arxiv.org/abs/2506.13585).
-
----
-
-**Citation note:** bracketed identifiers such as `[R40]` connect implementation choices to the bibliography; see [`docs/DESIGN.md`](docs/DESIGN.md) for the detailed method-by-method discussion. Paper titles and bibliographic metadata are provided for attribution; this README does not reproduce the full text of copyrighted papers.
+The reference list is intentionally curated. A method is cited where it informs a real design choice; the repository does not claim to reproduce any cited system end to end.
