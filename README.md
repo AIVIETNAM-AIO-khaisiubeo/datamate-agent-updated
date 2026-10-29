@@ -76,9 +76,6 @@ The runner emits one JSON object per input question in `submission.jsonl`. Detai
 
 ## Architecture
 
-![DataMate end-to-end pipeline](docs/figures/pipeline_v2.png)
-
-*Figure 1. End-to-end pipeline. The implementation combines a deterministic semantic layer and candidate execution with requirement-aware reconciliation inspired by ReViSQL [R40] and query-misalignment signals inspired by Trace Inversion [R39].*
 
 At a high level, a question travels through six stages:
 
