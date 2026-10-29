@@ -88,23 +88,6 @@ At a high level, a question travels through six stages:
 | 5. Execute and reconcile | `executor.py`, `formatter.py`, `requirements.py` | Execute candidates, standardise outputs, group equivalent answers, check requirement coverage, and vote among supported candidates. |
 | 6. Estimate reliability | `inversion.py`, `calibrate.py`, `scorer.py` | Inspect whether the winning program appears to answer the original question, calibrate correctness probability, and answer or abstain. |
 
-### The semantic layer matters
-
-Real small-business files are inconsistent: headers may span multiple rows, sheets may represent different tables, dates and currencies may use mixed formats, and quantity units may need conversion. DataMate resolves these issues before the LLM reasons over the data.
-
-The standard views encode rulebook-dependent semantics in one place. These include valid-order rules, returns and cancellations, revenue calculations, unit conversion, customer aliases, and self-checks that compare line-level totals with order-level totals. The LLM can use the standard views and, where useful, inspect raw tables with their context.
-
-Rulebooks can differ across data splits. The rulebook text is provided to the LLM, while code-level templates are enabled only when the current rulebook contains the corresponding rules. A template therefore does not silently apply a business assumption that is absent from the active split.
-
-## How a question is answered
-
-1. **Normalise and parse.** Vietnamese spelling variation, missing tone marks, common typing errors, intent, answer type, filters, thresholds, top-(k), and time expressions are resolved. Relative time is converted into an explicit half-open interval `[start, end)`.
-2. **Establish requirements.** The question is represented by explicit requirements such as the requested period, valid-order conditions, entity filters, thresholds, and output type. These requirements are used later to check candidate programs.
-3. **Try deterministic templates.** If a known intent can be answered safely against the standard views, a deterministic program provides a fast candidate and a plan describing what was actually applied.
-4. **Generate alternative programs when needed.** In LLM mode, Qwen3-14B generates multiple SQL candidates. Harder cases can escalate to plan-then-SQL, pandas, ReAct-style exploration, and an execution-feedback repair round. An optional judge is used when the leading answer groups are close.
-5. **Execute, group, and verify.** Programs run through a read-only DuckDB path or a separate Python execution process with timeouts. Candidates are grouped by their executed, normalised answer. Requirement-aware reconciliation checks which groups' programs cover the question's explicit requirements before voting.
-6. **Check query alignment.** Trace Inversion-inspired signals reconstruct the question implied by the winning program and compare it with the user's question. A structural check also compares period, filters, and answer type. Template candidates have a separate plan-to-question alignment check. These signals are evidence for calibration, not an automatic guarantee of correctness.
-7. **Calibrate and decide.** A calibrator maps candidate features to an estimate `p = P(correct | x)`. Because the reward for answering is `2p - 1`, while abstention scores 0, the Chow-style decision rule is to answer only when `p > 0.5`, with thresholds and calibration fitted on labelled development data [R27–R31]. An `unanswerable` result is still an answer and is subject to the same decision rule.
 
 ## Research foundations
 
