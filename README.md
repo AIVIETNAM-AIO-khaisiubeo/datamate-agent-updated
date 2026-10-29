@@ -8,8 +8,8 @@ không nên trả lời**. Hệ thống tối ưu cho *Penalized Accuracy*: đú
 → {"id": "q_06de33fa21cc", "type": "string", "answer": "Xi măng Hà Tiên PCB40 bao 50kg"}
 ```
 
-Thiết kế chi tiết, kèm trích dẫn cho từng phương pháp: [`docs/DESIGN.md`](docs/DESIGN.md). Tài liệu tham khảo:
-[`docs/REFERENCES.md`](docs/REFERENCES.md). Kết quả: [`docs/RESULTS.md`](docs/RESULTS.md).
+Thiết kế chi tiết, kèm trích dẫn cho từng phương pháp: [`docs/DESIGN.md`](docs/DESIGN.md). Tài liệu tham khảo: [`docs/REFERENCES.md`](docs/REFERENCES.md).
+Kết quả: [`docs/RESULTS.md`](docs/RESULTS.md).
 
 ## Ý tưởng chính
 1. **Quy tắc Chow**: với điểm +1/0/−1, chỉ trả lời (kể cả `unanswerable`) khi P(đúng) > 0.5. Calibrator được fit bằng
