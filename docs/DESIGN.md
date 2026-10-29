@@ -102,6 +102,8 @@ Implementation: **datamate/textnorm.py** and **datamate/question.py**.
 
 The parser extracts the likely intent, answer type, top-k, numeric thresholds, period phrases, comparison periods, and filters such as product/customer groups, payment methods, channels, staff, shifts, and catalog attributes. Text normalization handles Vietnamese diacritics, Telex typing errors, and selected abbreviations conservatively. It avoids rewriting a name or technical term unless the correction has sufficient linguistic evidence.
 
+This staged analysis follows the general decomposition motivation of DIN-SQL [R3], but the initial parsing and constraint extraction here are primarily deterministic rather than an LLM-generated reasoning plan.
+
 ### 5.2 Entity and attribute linking
 
 Implementation: **datamate/linker.py** and **datamate/attributes.py**.
