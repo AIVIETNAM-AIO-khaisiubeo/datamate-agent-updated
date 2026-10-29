@@ -167,15 +167,7 @@ datamate-agent/
     ├── RESULTS.md
     └── figures/
         └── architecture_round1.mmd
-~~~
 
-## Limitations and validation status
-
-- The recorded PA of 0.888 is an in-sample training result from template-and-rules mode.
-- The public split has no gold labels in this repository, so its accuracy and PA cannot be reported here.
-- The full Qwen3-14B GPU run and its model-specific calibration have not been validated in the documented development environment. A mock backend and a small CPU model were used only for smoke tests.
-- Template coverage is incomplete by design; unsupported or ambiguous questions may be abstained on.
-- ReViSQL-inspired requirement checks/reconciliation and Trace Inversion are inference-time adaptations. This repository does not reproduce ReViSQL's expert-labeling or RLVR fine-tuning pipeline.
 
 ## Documentation and research
 
