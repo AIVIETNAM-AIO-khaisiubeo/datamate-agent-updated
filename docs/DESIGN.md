@@ -46,7 +46,7 @@ The implementation has six logical layers:
 5. **Execution and reconciliation:** run programs with limits, normalize typed results, group equivalent outputs, check constraints, and select a candidate.
 6. **Reliability and output:** build alignment and agreement features, estimate correctness probability, apply the PA decision rule, and write submission/log records.
 
-Business-data context can be reused across questions for the same business. Question understanding is per question. Template-only mode skips LLM generation and Trace Inversion but retains template evidence and the decision rule.
+Business-data context can be reused across questions for the same business. Question understanding is per question. Template-only mode skips LLM candidate generation and LLM-based Trace Inversion, but it can still compute template-plan grounding features and uses the same PA decision rule.
 
 ## 4. Data preparation and semantic layer
 
