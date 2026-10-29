@@ -1,6 +1,6 @@
 # DataMate Agent
 
-**Zalo AI Challenge 2026 · DataMate · Round-one documentation**
+**Zalo AI Challenge 2026 · DataMate **
 
 DataMate is a Vietnamese natural-language data agent for small-business spreadsheets and databases. It answers questions over CSV, Excel, and SQLite data by combining deterministic data preparation, auditable query templates, LLM-generated programs, execution-based verification, candidate reconciliation, and calibrated abstention.
 
@@ -56,10 +56,6 @@ Each line in questions.jsonl is a JSON object with fields such as id, business_i
 ~~~
 
 The runner writes one output record per input question to a JSONL submission file. Optional per-question logs record the decision, timing, parsed context, candidate programs, execution results, and confidence features.
-
-## Architecture
-
-The diagram separates reusable business-data preparation from per-question processing. Both paths meet at candidate generation and bounded execution; reconciliation and confidence estimation then determine whether to return a typed answer or abstain.
 
 ~~~mermaid
 flowchart TB
