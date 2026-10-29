@@ -106,7 +106,8 @@ flowchart TB
     TPL["Deterministic templates<br/>fast and auditable"]
     SQL["LLM SQL samples<br/>requirements-aware prompts"]
     ESC["Adaptive escalation<br/>plan-to-SQL · Python/pandas · ReAct · repair"]
-    SQL -->|when needed| ESC
+    SQL --> RUN
+    FMT -. if first-round agreement is insufficient .-> ESC
   end
 
   subgraph EXECUTION["4 · Execution and reconciliation"]
@@ -145,7 +146,7 @@ flowchart TB
   VIEWS --> TPL
   REQ --> TPL
   REQ --> SQL
-  TPL --> RUN
+  TPL --> GROUP
   ESC --> RUN
   VIEWS -. raw and canonical tables .-> RUN
   REQ -. constraint checks .-> RC
@@ -153,7 +154,7 @@ flowchart TB
   VOTE --> ALIGN
   VOTE -. agreement and margin .-> CALIB
 
-  FAST["Template-only mode skips LLM generation and Trace Inversion. It keeps template evidence and the same PA decision rule."]
+  FAST["Template-only mode skips LLM generation and LLM-based Trace Inversion.<br/>Template-plan grounding features can still be used."]
   TPL -. fallback path .-> FAST
 
   classDef input fill:#F8FAFC,stroke:#94A3B8,color:#172033;
