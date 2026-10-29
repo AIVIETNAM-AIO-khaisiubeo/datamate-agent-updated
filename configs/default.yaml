@@ -1,0 +1,83 @@
+# DataMate agent configuration. Every key can be overridden from the CLI with
+#   --set llm.main_model=Qwen/Qwen3-32B --set agent.n_sql=5
+
+data:
+  root: data/                 # contains <business_id>/ folders (searched recursively)
+  rulebook: null              # path; null = auto-discover rulebook*.{md,txt,yaml,json} under root
+  lunar_calendar: null        # path; null = auto-discover *lunar*/*am*lich*/*calendar* under root
+  cache_dir: .cache/          # DuckDB snapshots + LLM response cache
+
+llm:
+  backend: openai             # openai (any OpenAI-compatible server: vLLM, SGLang, API) | none
+  base_url: http://localhost:8000/v1
+  api_key: EMPTY
+  # Competition Rule 2: <= 15B parameters in total across ALL models used at inference
+  # (MoE models count all experts). Qwen3-14B (14.8B, Apache-2.0, released 2025-04) uses
+  # the whole budget, so no second model by default. Quantisation is allowed.
+  main_model: Qwen/Qwen3-14B
+  sql_model: null             # only if the total stays <= 15B (e.g. Qwen3-4B + OmniSQL-7B = 11.6B)
+  params_b:                   # declared parameter counts (billions), checked by scripts/run.py
+    Qwen/Qwen3-14B: 14.8
+    Qwen/Qwen3-8B: 8.2
+    Qwen/Qwen3-4B: 4.0
+    Qwen/Qwen2.5-Coder-14B-Instruct: 14.7
+    Qwen/Qwen2.5-Coder-7B-Instruct: 7.6
+    seeklhy/OmniSQL-7B: 7.6
+    Snowflake/Arctic-Text2SQL-R1-7B: 7.6
+    intfloat/multilingual-e5-small: 0.118          # optional trace-inversion SE encoder (inversion.se_model)
+    sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2: 0.118
+  sql_base_url: http://localhost:8001/v1
+  temperature: 0.7
+  max_tokens: 1500            # non-thinking completions
+  thinking_max_tokens: 8192   # completions with Qwen3 thinking mode
+  timeout_s: 300
+  # Qwen3 hybrid thinking: ~40 s/question are available (500 questions / 6 h on 2xRTX5090, TP=2),
+  # enough to think in every generator. Set false for a faster, weaker run.
+  enable_thinking: true
+  cache: true                 # deterministic disk cache of (prompt, sampling) -> response
+
+agent:
+  use_templates: true         # deterministic programs over the semantic layer (fast path)
+  n_sql: 3                    # round-1 direct SQL samples
+  # ReViSQL inference-time scaling [R40]: greedy decoding plus samples at higher temperatures
+  # (they use 0 / 0.25 / 0.5 / 0.75 / 1.0 in equal numbers); n_sql is split across this list.
+  sql_temperatures: [0.0, 0.5, 1.0]
+  requirements_in_prompt: true  # ReViSQL evidence supervision: R1..Rn + one CHECK line per requirement
+  n_plan: 2                   # escalation: plan-then-SQL samples (CHASE-SQL "divide & conquer" flavour)
+  n_py: 2                     # escalation: pandas programs (CodeAct) - independent family
+  n_sql_model: 2              # escalation: samples from llm.sql_model if configured
+  react_steps: 3              # escalation: ReAct data-exploration agent, max tool calls
+  max_fix_rounds: 1           # execution-guided self-debugging rounds per candidate
+  early_exit_agree: 3         # stop after round 1 if this many candidates agree (and template agrees if fired)
+  escalate_thinking: true
+  use_judge: true             # one pairwise LLM judge call when the top-2 answer clusters are within 0.5 votes
+  exec_timeout_s: 8
+  py_timeout_s: 15
+  max_result_rows: 500
+  workers: 8                  # questions processed concurrently
+
+reconcile:                    # ReViSQL Algorithm 1: keep only execution groups that cover every requirement
+  llm_decide: true            # + one short LLM verdict per group (top max_groups), only when >= 2 groups exist
+  max_groups: 3
+
+inversion:                    # Trace Inversion [R39]: reconstruct the question from the winning program
+  enabled: true               # LLM mode only, skipped in fast mode; 2 short calls (thinking off) per LLM answer
+  se_model: null              # null = character 3-gram similarity (no extra parameters); or a LOCAL path to a
+                              # multilingual sentence-embedding model declared in llm.params_b (<= 15B total)
+  se_threshold: 0.35          # SE vote threshold; scripts/fit_calibrator.py re-tunes it on a labelled run
+  max_tokens: 320
+
+run:
+  time_budget_s: 20700        # 5h45m of the 6h limit (Rule 7); model loading happens before
+  fast_after_s: 18000         # after 5h: templates + rules only (no LLM) for the remaining questions
+  max_total_params_b: 15.0
+
+decision:
+  # Chow's rule for PA (+1/0/-1): answer iff P(correct) > 0.5. Tune on dev only.
+  tau_answer: 0.5
+  tau_unanswerable: 0.5
+  calibrator_path: artifacts/calibrator.pkl
+  offline_template_prior: 0.75  # prior P(correct) of a fired template when no LLM family exists
+
+format:
+  weekday_names: ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]

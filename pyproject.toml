@@ -1,0 +1,21 @@
+[project]
+name = "datamate-agent"
+version = "0.1.0"
+description = "Calibrated text-to-SQL / data agent with abstention for Zalo AI Challenge 2026 - DataMate"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+  "duckdb>=1.1", "pandas>=2.2", "numpy>=1.26", "openpyxl>=3.1", "rapidfuzz>=3.9",
+  "scikit-learn>=1.4", "pyyaml>=6.0", "python-dateutil>=2.9", "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+serve = ["vllm>=0.8"]
+
+[tool.setuptools]
+packages = ["datamate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,28 @@
+# Fallback values for conventions used by deterministic code.
+#
+# Every key below is first looked for in the split's own rulebook.md
+# (datamate/rulebook.py: infer_from_text); the values here are used only when
+# the rulebook text does not state the convention explicitly. They mirror the
+# defaults of the official train/public rulebooks (October 2026).
+#
+# Deterministic templates additionally check "rule fingerprints"
+# (rulebook.CLAUSES): if the clause they implement is missing from the split's
+# rulebook, the template is switched off and the LLM answers from the text.
+
+ranking:
+  bestseller_metric: quantity       # "bán chạy" = by base-unit quantity
+  tie_break: code_asc
+
+time:
+  week_start: monday
+  current_period_to_date: true      # "tháng này" = day 1 .. today
+  compare_same_days: true           # this month vs last month: same number of days
+  rolling_includes_today: true      # "N ngày gần nhất" ends today
+  tet_start_chap_day: 23            # Tết window: 23 tháng Chạp (lunar Y-1) ..
+  tet_last_day: 10                  #             .. mùng 10 tháng Giêng (lunar Y)
+  shift_morning: [360, 839]         # minutes 06:00 .. 13:59
+  shift_afternoon: [840, 1319]      # minutes 14:00 .. 21:59
+  expiring_horizon_days: 30
+
+valid_orders:                        # legacy (synthetic generator only)
+  invalid_status_keywords: ["huy", "cancel", "tra hang", "hoan tra", "return", "refund"]

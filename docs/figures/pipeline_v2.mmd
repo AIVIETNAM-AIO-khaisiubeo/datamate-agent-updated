@@ -1,0 +1,19 @@
+flowchart TD
+    Q["Câu hỏi + as_of_date"] --> U["Hiểu câu hỏi (deterministic)<br/>qnorm · ý định · TimeResolver · linker · bằng chứng unanswerable"]
+    U --> REQ["Requirements R1..Rn<br/>khoảng thời gian · đơn hợp lệ · bộ lọc · ngưỡng · top-k<br/><i>ReViSQL: evidence supervision</i>"]
+    U --> T["Templates trên view chuẩn<br/>(plan: intent, kỳ, bộ lọc đã áp)"]
+    REQ --> G["Sinh ứng viên LLM (Qwen3-14B)<br/>SQL: greedy + T=0.5 + T=1.0<br/>leo thang: plan→SQL · pandas · ReAct · tự sửa<br/><i>ReViSQL: inference-time scaling</i>"]
+    G --> X["Thực thi DuckDB / pandas"]
+    T --> GR
+    X --> GR["Gom nhóm theo đáp án đã thực thi"]
+    GR --> D{"Decide(nhóm)<br/>① kiểm tra R1..Rn trên chương trình<br/>② 1 lời gọi VERDICT YES/NO<br/><i>ReViSQL Algorithm 1</i>"}
+    D -->|"các nhóm đạt<br/>(không nhóm nào đạt → giữ tất cả)"| V["Bỏ phiếu có trọng số<br/>(+ judge khi 2 nhóm sát nhau)"]
+    V --> TI["Trace Inversion trên chương trình thắng<br/>dựng lại câu hỏi q* chỉ từ chương trình + kết quả<br/>SE (3-gram / embedding) · TrInv-LLM (YES/NO) · STRUCT (kỳ, bộ lọc, kiểu)<br/>→ biểu quyết đa số<br/><i>Gourabathina et al., ACL 2026</i>"]
+    V --> TT["Template inversion<br/>plan → câu hỏi, độ bám của bộ lọc"]
+    TI --> C["Calibrator (CV nhóm theo shop)<br/>P(đúng)"]
+    TT --> C
+    C --> CH{"Chow: P > 0,5?"}
+    CH -->|có| A["Trả lời / unanswerable"]
+    CH -->|không| AB["abstain"]
+    classDef new fill:#e8f1ff,stroke:#2f6fd0,color:#0b2a5b;
+    class REQ,D,TI,TT new;
